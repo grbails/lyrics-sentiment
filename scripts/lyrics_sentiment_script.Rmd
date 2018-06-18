@@ -1,0 +1,390 @@
+---
+title: Heaven knows he’s miserable now… but just how miserable is he? Sentiment analysis
+  of Morrissey and Smiths lyrics
+author: "George Bailey"
+date: "16/06/2018"
+output:
+  html_document:
+    df_print: paged
+    theme: flatly
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+We'll be working with the `tidyverse` and `tidytext` packages to conduct our analysis, so let's load them in:
+
+```{r packages}
+library(tidyverse)
+library(tidytext)
+```
+
+# Preparing the data
+
+## Read in the song lyrics
+
+Look in the `smiths_songs` folder and combine all of the .txt files together into one dataframe called `songs`. It will have two columns:
+
+* `line`: each line of each song
+* `name`: the name of the song that line belongs to
+
+```{r}
+songs <- list.files("../data/smiths_songs", 
+                    pattern=".txt", 
+                    full.names=TRUE) %>%
+  map_dfr(function(x) read_delim(x, delim='\t', col_names='line') %>%
+            mutate(name=gsub(".txt", "", basename(x))))
+```
+
+## Tokenise into words
+
+Now we want to convert the dataframe into a different format where each word (from each line, from each song) is on its own line. Before we do this, though, we need to add line numbers for each song so that we know exactly where each word is from:
+
+```{r}
+songs <- songs %>%
+  group_by(name) %>%
+  mutate(linenumber = row_number()) %>%
+  ungroup()
+
+head(songs)
+```
+
+Now we can tokenise into a one-word-per-line format:
+
+```{r}
+songs.words <- songs %>%
+  unnest_tokens(word, line)
+
+head(songs.words)
+```
+
+## Prepare sentiment dictionaries
+
+To conduct sentiment analysis we'll first need access to a sentiment lexicon, basically a list of words with a corresponding score reflecting how positive or negative that word is. 
+
+There are two popular dictionaries we're going to use, both of which are included within the `tidytext` package.
+
+First off we'll look at the *Bing* dictionary, which codes words in a binary fashion - i.e. either *negative* or *positive*.
+
+Let's get a list of words from this dictionary (removing a few that appear in the Smiths lyrics that I don't consider to have overt sentiment):
+
+```{r}
+bing <- get_sentiments("bing") %>%
+  filter(!word %in% c("enough", "a+", "well", "hang", "pretend", "falling"))
+```
+
+It's possible that this dictionary is missing some words. Let's get a list of words from our lyrics dataset, ordered by frequency, which *aren't* included in the Bing dictionary:
+
+```{r}
+songs.words %>%
+  filter(!(word %in% bing$word)) %>%
+  count(word, sort=T)
+```
+
+Some of these words definitely have overt sentiment, even though they're not included in the built-in dictionary. Let's add these to the dictionary.
+
+First off, the words I believe to be negative:
+
+```{r}
+bing <- bind_rows(bing, 
+                  data.frame(word=c("murdered", "saddest", "bludgeoned", 
+                                    "dreaded", "unfair", "ill", 
+                                    "coma", "serious", "strangled", 
+                                    "loutish", "unholy", "sycophantic", 
+                                    "slags", "deceived", "sorrow's", 
+                                    "stabbed", "grave", "darkness", 
+                                    "ghouls", "cried", "bullied", 
+                                    "ills", "disease", "spineless", 
+                                    "unruly", "unloveable"),
+                             sentiment="negative"))
+```
+
+And now the positive words missing from Bing:
+
+```{r}
+bing <- bind_rows(bing, 
+                  data.frame(word=c("lovers", "triumphs", "charms", 
+                                    "laugh", "sunny", "friendship", 
+                                    "homely", "ambition", "blessed"),
+                             sentiment="positive"))
+```
+
+Now let's do the same for the *Afinn* dictionary. This differs from the *Bing* dictionary in how sentiment is measured; rather than using a binary coding scheme, sentiment is operationalised as a continuous measure from -5 (most negative) to +5 (most positive).
+
+We can access the dictionary using the same function as before (again removing some words that I don't think should be in there).
+
+```{r}
+afinn <- get_sentiments("afinn") %>%
+  filter(!word %in% c("missed", "want", "fire",
+                      "no", "stop", "feeling",
+                      "falling", "please", "help", 
+                      "forget", "stole", "pretend"))
+```
+
+First off, let's see which words from the lyrics dataset are in *Bing* but not *Afinn*:
+
+```{r}
+bing %>%
+  filter(!word %in% afinn$word,
+         word %in% songs.words$word)
+```
+
+Now let's see which words from the lyrics dataset are missing from *Afinn* (regardless of whether they're in *Bing* or not):
+
+```{r}
+songs.words %>%
+  filter(!word %in% afinn$word) %>%
+  count(word, sort=T)
+```
+
+Like before, let's add some of these words to the dictionary. First off, the words that I consider to be slightly negative (i.e. a score of -1):
+
+```{r}
+afinn <- afinn %>%
+  bind_rows(data.frame(score = -1, 
+                       word = c("beggar", "bruises", "cold", 
+                                "concern", "crack", "crashed", 
+                                "crashes", "dark", "darkened", 
+                                "false", "fat", "fierce", 
+                                "idle", "ills", "inept", 
+                                "intrude", "knife", "laughable", 
+                                "lose", "prejudice", "rude", 
+                                "sag", "slap", "stole", 
+                                "strain", "tacky", "taint", 
+                                "unruly", "weaker", "serious", 
+                                "loutish", "sycophantic", "unruly")))
+```
+
+Now the words that I consider to be quite negative (-2):
+
+```{r}
+afinn <- afinn %>%
+  bind_rows(data.frame(score = -2,
+                       word = c("belligerent", "corrupt", "desolate", 
+                                "gravely", "idiocy", "sadness", 
+                                "stench", "torment", "uglier", 
+                                "vulgar", "saddest", "unholy", 
+                                "ghouls", "disease", "sorrow's", "lose")))
+```
+
+Now the words that I consider to be very negative (-3):
+
+```{r}
+afinn <- afinn %>%
+  bind_rows(data.frame(score = -3,
+                       word = c("devil", "dying", "fatal", 
+                                "gruesome", "hateful", "hatred", 
+                                "hideous", "sickening", "sin", 
+                                "murdered", "bludgeoned", "coma", 
+                                "slags", "spineless")))
+```
+
+Now the words that I consider to be slightly positive (score of 1):
+
+```{r}
+afinn <- afinn %>%
+  bind_rows(data.frame(score = 1,
+                       word = c("brighter", "darling", "delicate", 
+                                "pamper", "privilege", "sensible", 
+                                "worthwhile", "right")))
+```
+
+Now the words that I consider to be quite positive (2):
+
+```{r}
+afinn <- afinn %>%
+  bind_rows(data.frame(score = 2,
+                       word = c("awe", "alluring", "devout", 
+                                "funny", "gentle", "handsome", 
+                                "harmony", "kindly", "loves", 
+                                "precious", "sweetness","valuable", 
+                                "charm", "friendship")))
+```
+
+Now the words that I consider to be very positive (3):
+
+```{r}
+afinn <- afinn %>%
+  bind_rows(data.frame(score = -3,
+                       word = c("cure", "holy", "lover", 
+                                "lovers", "triumphs")))
+```
+
+Now the words that I consider to be extremely positive (4):
+
+```{r}
+afinn <- afinn %>%
+  bind_rows(data.frame(score = 4,
+                       word = c("wondrous")))
+```
+
+## Joining the lyrics with their sentiment scores
+
+We can use `left_join()` to add the *Bing* sentiment classifications to our lyrics dataset (the one we've formatted into one word-per line). We can use `slice()` to take a look at a sample of 10 rows to see what the dataframe looks like now.
+
+```{r}
+songs.words <- songs.words %>%
+  left_join(bing)
+
+songs.words %>%
+  slice(30:40)
+```
+
+Now let's aggregate this sentiment analysis by line, i.e. get the total number of positive and negative words for each line of each song:
+
+```{r}
+bing.line.scores <- songs.words %>%
+  filter(!is.na(sentiment)) %>%
+  count(name, linenumber, sentiment) %>%
+  spread(sentiment, n)
+```
+  
+And now we can join this back to our original dataset so that for each line we have a count of how many *positive* and *negative* words occur:
+  
+```{r}  
+songs <- songs %>%
+  left_join(bing.line.scores)
+
+head(songs)
+```
+
+We'll also want to do the same for the Afinn scores; for the aggregation we'll calculate the *total score* for each line (so adding up the scores for each individual word) as well as the *average score* for each line (the mean of all scores for each individual word):
+
+```{r}
+afinn.line.scores <- songs.words %>%
+  left_join(afinn) %>%
+  filter(!is.na(score)) %>%
+  group_by(name, linenumber) %>%
+  summarise(total.score = sum(score), avg.score = mean(score)) %>%
+  ungroup()
+
+head(afinn.line.scores)
+```
+
+And like before, let's add these scores to our original dataset:
+
+```{r}
+songs <- songs %>%
+  left_join(afinn.line.scores)
+```
+
+## Implementing valence shifters
+
+The last thing we want to do is to implement some valence shifters to make our sentiment analysis a *little* more sophisticated. 
+
+```{r}
+negators <- lexicon::hash_valence_shifters[y==1]$x 
+intensifiers <- lexicon::hash_valence_shifters[y==2]$x
+mitigators <- lexicon::hash_valence_shifters[y==3]$x
+```
+
+Let's look at a random sample from each type of valence shifter:
+
+```{r, include=F}
+set.seed(2)
+```
+
+```{r}
+negators %>%
+  sample(5)
+```
+
+```{r, include=F}
+set.seed(1)
+```
+
+```{r}
+intensifiers %>%
+  sample(5)
+```
+
+```{r, include=F}
+set.seed(2)
+```
+
+```{r}
+mitigators %>%
+  sample(5)
+```
+
+The following code will add three new columns to the dataset called `negated`, `intensified`, and `mitigated`, which are evaluated logically - *TRUE* if the line contains that type of valence shifter, and *FALSE* if it doesn't.
+
+```{r}
+songs <- songs %>%
+  mutate(
+    negated = case_when(
+      grepl(paste(negators, collapse='\\b|\\b'), tolower(songs$line)) ~ TRUE,
+      TRUE ~ FALSE),
+    intensified = case_when(
+      grepl(paste(intensifiers, collapse='\\b|\\b'), tolower(songs$line)) ~ TRUE,
+      TRUE ~ FALSE),
+    mitigated = case_when(
+      grepl(paste(mitigators, collapse='\\b|\\b'), tolower(songs$line)) ~ TRUE,
+      TRUE ~ FALSE)
+    )
+```
+ 
+We can now modify the *Afinn* sentiment scores based on the presence of these valence shifters as follows:
+
+* if *negated*: invert the polarity of the sentiment score (i.e. 2 becomes -2)
+* if *intensified*: double the sentiment score (i.e. 2 becomes 4)
+* if *mitigated*: halve the sentiment score (i.e. 2 becomes 1)
+
+```{r}
+songs <- songs %>%
+  mutate(total.score.mod = total.score,
+         avg.score.mod = avg.score)
+
+songs <- songs %>%
+  mutate(total.score.mod = case_when(
+    negated == TRUE ~ total.score.mod * -1,
+    negated == FALSE ~ as.numeric(total.score.mod))) %>%
+  mutate(total.score.mod = case_when(
+    intensified == TRUE ~ total.score.mod * 2,
+    intensified == FALSE ~ as.numeric(total.score.mod))) %>%
+  mutate(total.score.mod = case_when(
+    mitigated == TRUE ~ total.score.mod / 2,
+    mitigated == FALSE ~ as.numeric(total.score.mod)))
+
+songs <- songs %>%
+  mutate(avg.score.mod = case_when(
+    negated == TRUE ~ avg.score.mod * -1,
+    negated == FALSE ~ as.numeric(avg.score.mod))) %>%
+  mutate(avg.score.mod = case_when(
+    intensified == TRUE ~ avg.score.mod * 2,
+    intensified == FALSE ~ as.numeric(avg.score.mod))) %>%
+  mutate(avg.score.mod = case_when(
+    mitigated == TRUE ~ avg.score.mod / 2,
+    mitigated == FALSE ~ as.numeric(avg.score.mod)))
+```
+
+## Adding metadata
+
+Finally, let's add some metadata to the lyrics dataset, containing the following fields:
+
+* `album`: what album the song is from
+* `name.short`: a shorter version of the song's name (for the purposes of plotting)
+* `year`: when the song was released
+
+All of this information is contained within the `smiths_meta.csv` file, so we can read it in and join it to our `songs` dataframe as follows:
+
+```{r}
+songs <- songs %>%
+  left_join(read_csv("../data/smiths_meta.csv"), by=c('name'='name'))
+```
+
+Let's take a random sample of some columns to make sure it's worked:
+
+```{r}
+songs %>%
+  select('line', 'name', 'album', 'year') %>%
+  sample_n(5)
+```
+
+Great! It's finally time for some analysis...

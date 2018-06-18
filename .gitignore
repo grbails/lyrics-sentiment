@@ -2,3 +2,5 @@
 .Rhistory
 .RData
 .Ruserdata
+lyrics-sentiment.Rproj
+.gitignore
